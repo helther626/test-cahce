@@ -14,6 +14,8 @@ USE_DEFAULT_ID: str = None
 MANUAL_SESSION: dict = None
 db = Database()
 
+__version__ = "5.0.1"
+
 #----- Install the auto-catalog manual override layer after Database and the
 #----- original auto-catalog functions are loaded. Do not silently ignore
 #----- installation errors: a broken override must fail startup rather than
@@ -23,8 +25,6 @@ import Backend.helper.catalog_manual_overrides  # noqa: F401,E402
 #----- Extend the existing metadata relink operation so catalog references
 #----- and subtitle identities follow the new TMDB/IMDb identity too.
 import Backend.helper.media_relink_overrides  # noqa: F401,E402
-
-__version__ = "5.0.1"
 
 #----- Keep the Stremio stream UI label concise without changing stream URLs,
 #----- Telegram file IDs, quality filtering, or sorting.
