@@ -381,50 +381,7 @@ async def get_manifest(token: str, token_data: dict = Depends(verify_token)):
         catalogs = []
     else:
         resources = ["catalog", "meta", "stream", "subtitles"]
-        catalogs = [
-            {
-                "type": "movie",
-                "id": "latest_movies",
-                "name": "Latest",
-                "extra": [
-                    {"name": "genre", "isRequired": False, "options": GENRES},
-                    {"name": "skip"}
-                ],
-                "extraSupported": ["genre", "skip"]
-            },
-            {
-                "type": "movie",
-                "id": "top_movies",
-                "name": "Popular",
-                "extra": [
-                    {"name": "genre", "isRequired": False, "options": GENRES},
-                    {"name": "skip"},
-                    {"name": "search", "isRequired": False}
-                ],
-                "extraSupported": ["genre", "skip", "search"]
-            },
-            {
-                "type": "series",
-                "id": "latest_series",
-                "name": "Latest",
-                "extra": [
-                    {"name": "genre", "isRequired": False, "options": GENRES},
-                    {"name": "skip"}
-                ],
-                "extraSupported": ["genre", "skip"]
-            },
-            {
-                "type": "series",
-                "id": "top_series",
-                "name": "Popular",
-                "extra": [
-                    {"name": "genre", "isRequired": False, "options": GENRES},
-                    {"name": "skip"},
-                    {"name": "search", "isRequired": False}
-                ],
-                "extraSupported": ["genre", "skip", "search"]
-            }
-        ]
+        catalogs = []
 
         try:
             custom_catalogs = await db.get_custom_catalogs()
@@ -941,7 +898,6 @@ async def get_streams(
     request: Request,
     token_data: dict = Depends(verify_token)
 ):
-    #----- Capture the real app/device from the addon-protocol UA (not the spoofed video UA)
     asyncio.create_task(record_client(
         token,
         token_data.get("name") if token_data else None,
@@ -960,8 +916,6 @@ async def get_streams(
             ]
         }
 
-    #----- Subscription users must currently be members of the configured group.
-    #----- Admin, lifetime and admin-set token-expiry grants skip this check.
     if (SettingsManager.current().subscription
             and not token_data.get("is_admin")
             and not token_data.get("subscription_exempt")
@@ -1077,7 +1031,6 @@ async def get_streams(
         except Exception as e:
             LOGGER.error(f"[GLOBAL SEARCH] stream search failed for {id}: {e}")
 
-    #----- Per-token quality filter (fall back to all if it would hide everything)
     config = token_data.get("config") or {}
     quality_filter = set(config.get("quality_filter") or [])
     if quality_filter and streams:
