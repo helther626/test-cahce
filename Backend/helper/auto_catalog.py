@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
 import httpx
@@ -9,6 +9,7 @@ from Backend.logger import LOGGER
 
 AUTO_CATALOG_REGION = "IN"
 AUTO_SYNC_CONCURRENCY = 5
+RECENTLY_ADDED_DAYS = 30
 
 #----- User can choose exactly which auto catalogs are enabled.
 AUTO_CATALOG_DEFINITIONS = [
@@ -107,13 +108,57 @@ def _doc_identity(doc: dict) -> Tuple[str, int, int]:
     return (_media_type(doc), int(doc.get("tmdb_id")), int(doc.get("db_index", 1)))
 
 
+def _coerce_datetime(value) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _doc_added_at(doc: dict) -> Optional[datetime]:
+    #----- Use the original insertion/addition timestamp when the media
+    #----- document stores one. Do not use the auto-catalog sync time.
+    for field in (
+        "added_at",
+        "added_on",
+        "created_at",
+        "created_on",
+        "date_added",
+        "inserted_at",
+    ):
+        value = _coerce_datetime(doc.get(field))
+        if value:
+            return value
+
+    #----- MongoDB ObjectId contains its creation timestamp. This is a safe
+    #----- fallback for existing documents when no explicit added timestamp
+    #----- was stored by the importer.
+    object_id = doc.get("_id")
+    generation_time = getattr(object_id, "generation_time", None)
+    if generation_time:
+        try:
+            return generation_time.replace(tzinfo=None)
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+    #----- Compatibility fallback only. This may represent an update rather
+    #----- than the original insertion time, so it is intentionally last.
+    return _coerce_datetime(doc.get("updated_on"))
+
+
 def _doc_item(doc: dict) -> dict:
     media_type, tmdb_id, db_index = _doc_identity(doc)
     return {
         "tmdb_id": tmdb_id,
         "db_index": db_index,
         "media_type": media_type,
-        "added_at": datetime.utcnow(),
+        "added_at": _doc_added_at(doc),
         "updated_on": doc.get("updated_on"),
         "visibility": doc.get("visibility") or "public",
         "allowed_tokens": doc.get("allowed_tokens") or [],
@@ -258,12 +303,11 @@ def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, enabled
     except Exception:
         pass
 
-    if doc.get("release_year"):
-        try:
-            if int(doc.get("release_year")) >= datetime.utcnow().year - 1:
-                tags.add("Recently Added")
-        except Exception:
-            pass
+    #----- Recently Added is based on when the media entered this collection,
+    #----- never on release_year and never on auto-catalog sync time.
+    added_at = _doc_added_at(doc)
+    if added_at and added_at >= datetime.utcnow() - timedelta(days=RECENTLY_ADDED_DAYS):
+        tags.add("Recently Added Movies" if media_type == "movie" else "Recently Added Series")
 
     provider_names = _extract_provider_names(watch_data)
     if provider_names:
@@ -551,7 +595,10 @@ async def _rebuild_auto_catalogs(db, catalog_items: Dict[str, List[dict]], enabl
             seen.add(key)
             unique_items.append(item)
 
-        unique_items.sort(key=lambda it: it.get("updated_on") or it.get("added_at") or datetime.min, reverse=True)
+        if name in {"Recently Added Movies", "Recently Added Series"}:
+            unique_items.sort(key=lambda it: it.get("added_at") or datetime.min, reverse=True)
+        else:
+            unique_items.sort(key=lambda it: it.get("updated_on") or it.get("added_at") or datetime.min, reverse=True)
 
         await collection.update_one(
             {"auto_key": _catalog_key(name)},
