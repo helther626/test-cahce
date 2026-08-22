@@ -14,14 +14,10 @@ USE_DEFAULT_ID: str = None
 MANUAL_SESSION: dict = None
 db = Database()
 
-#----- Install the auto-catalog manual override layer after Database is loaded.
-#----- It only extends catalog reads/add/remove/purge behavior and does not
-#----- alter storage documents or the existing auto-classification code.
-try:
-    import Backend.helper.catalog_manual_overrides  # noqa: F401
-except Exception:
-    #----- Keep startup resilient; catalog functionality remains on the
-    #----- original implementation if the optional compatibility layer fails.
-    pass
+#----- Install the auto-catalog manual override layer after Database and the
+#----- original auto-catalog functions are loaded. Do not silently ignore
+#----- installation errors: a broken override must fail startup rather than
+#----- leave catalog behavior half-installed.
+import Backend.helper.catalog_manual_overrides  # noqa: F401,E402
 
 __version__ = "5.0.1"
