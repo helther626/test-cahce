@@ -9,6 +9,8 @@ from Backend.helper.database import Database
 #----- movie/episode content. This wrapper additionally follows the identity
 #----- change into tracking references and subtitle records.
 _ORIGINAL_REPLACE_MEDIA_METADATA = Database.replace_media_metadata
+_ORIGINAL_GET_MEDIA_DETAILS = Database.get_media_details
+_ALIAS_COLLECTION = "media_identity_aliases"
 
 
 def _media_type(value) -> str:
@@ -35,6 +37,51 @@ def _rewrite_ref(item: dict, new_tmdb_id: int, new_db_index: int, media_type: st
     return updated
 
 
+async def _resolve_alias(db: Database, imdb_id: str | None, media_type: str) -> str | None:
+    if not imdb_id:
+        return imdb_id
+    aliases = db.dbs["tracking"][_ALIAS_COLLECTION]
+    current = str(imdb_id)
+    seen = set()
+    for _ in range(8):
+        if current in seen:
+            break
+        seen.add(current)
+        doc = await aliases.find_one({"old_imdb_id": current, "media_type": media_type})
+        if not doc or not doc.get("new_imdb_id"):
+            break
+        current = str(doc["new_imdb_id"])
+    return current
+
+
+async def _save_identity_alias(
+    db: Database,
+    *,
+    old_imdb_id: str | None,
+    new_imdb_id: str | None,
+    old_tmdb_id: int,
+    new_tmdb_id: int,
+    db_index: int,
+    media_type: str,
+) -> None:
+    if not old_imdb_id or not new_imdb_id or old_imdb_id == new_imdb_id:
+        return
+    aliases = db.dbs["tracking"][_ALIAS_COLLECTION]
+    await aliases.update_one(
+        {"old_imdb_id": old_imdb_id, "media_type": media_type},
+        {"$set": {
+            "old_imdb_id": old_imdb_id,
+            "new_imdb_id": new_imdb_id,
+            "old_tmdb_id": int(old_tmdb_id),
+            "new_tmdb_id": int(new_tmdb_id),
+            "db_index": int(db_index),
+            "media_type": media_type,
+            "updated_at": datetime.utcnow(),
+        }},
+        upsert=True,
+    )
+
+
 async def _follow_identity_change(
     db: Database,
     *,
@@ -47,6 +94,19 @@ async def _follow_identity_change(
     new_tmdb_id = int(updated_doc.get("tmdb_id") or old_tmdb_id)
     new_imdb_id = updated_doc.get("imdb_id") or old_imdb_id
     new_db_index = int(updated_doc.get("db_index") or db_index)
+
+    #----- Persist the old->new identity. Stremio requests are keyed by IMDb,
+    #----- so this alias is what keeps an old installed/catalog ID attached to
+    #----- the newly relinked Telegram content.
+    await _save_identity_alias(
+        db,
+        old_imdb_id=old_imdb_id,
+        new_imdb_id=new_imdb_id,
+        old_tmdb_id=int(old_tmdb_id),
+        new_tmdb_id=new_tmdb_id,
+        db_index=new_db_index,
+        media_type=media_type,
+    )
 
     #----- Catalogs are stored in tracking DB as references. Follow the new
     #----- identity so a relink cannot leave a stale catalog entry behind.
@@ -97,6 +157,28 @@ async def _follow_identity_change(
         )
 
 
+async def _get_media_details(
+    self: Database,
+    imdb_id: str = None,
+    season_number: int = None,
+    episode_number: int = None,
+    kitsu_id: int = None,
+    absolute_episode: int = None,
+):
+    #----- Resolve legacy Stremio IMDb IDs before every metadata/episode
+    #----- lookup. This makes old installed catalogs and cached Stremio IDs
+    #----- transparently point at the newly relinked media document.
+    resolved_imdb = await _resolve_alias(self, imdb_id, "tv" if season_number is not None or episode_number is not None else "movie")
+    return await _ORIGINAL_GET_MEDIA_DETAILS(
+        self,
+        imdb_id=resolved_imdb,
+        season_number=season_number,
+        episode_number=episode_number,
+        kitsu_id=kitsu_id,
+        absolute_episode=absolute_episode,
+    )
+
+
 async def _replace_media_metadata(
     self: Database,
     media_type: str,
@@ -130,4 +212,5 @@ async def _replace_media_metadata(
 
 
 #----- Install after the original Database implementation is available.
+Database.get_media_details = _get_media_details
 Database.replace_media_metadata = _replace_media_metadata
