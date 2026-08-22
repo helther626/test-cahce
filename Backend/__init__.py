@@ -20,4 +20,8 @@ db = Database()
 #----- leave catalog behavior half-installed.
 import Backend.helper.catalog_manual_overrides  # noqa: F401,E402
 
+#----- Extend the existing metadata relink operation so catalog references
+#----- and subtitle identities follow the new TMDB/IMDb identity too.
+import Backend.helper.media_relink_overrides  # noqa: F401,E402
+
 __version__ = "5.0.1"
