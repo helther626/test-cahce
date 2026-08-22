@@ -25,3 +25,7 @@ import Backend.helper.catalog_manual_overrides  # noqa: F401,E402
 import Backend.helper.media_relink_overrides  # noqa: F401,E402
 
 __version__ = "5.0.1"
+
+#----- Keep the Stremio stream UI label concise without changing stream URLs,
+#----- Telegram file IDs, quality filtering, or sorting.
+import Backend.helper.stream_label_overrides  # noqa: F401,E402
