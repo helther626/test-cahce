@@ -31,26 +31,25 @@ def parse_media_name(name: str) -> dict:
         "episode": ptn.get("episode"), "quality": ptn.get("resolution"), "excess": ptn.get("excess"),
     }
 
+    # EP-only is explicitly Season 1. Do this whenever no season was found,
+    # even if PTN/GuessIt already extracted the episode number.
     simple_ep = _EXPLICIT_EP_ONLY_RE.search(name)
-    if simple_ep and parsed.get("season") is None and parsed.get("episode") is None:
+    if simple_ep and parsed.get("season") is None:
         parsed["season"] = 1
         parsed["episode"] = int(simple_ep.group(1))
         title_candidate = re.sub(r"\.[a-z0-9]{2,4}$", "", name, flags=re.IGNORECASE)
         title_candidate = _EXPLICIT_EP_ONLY_RE.sub(" ", title_candidate, count=1)
         title_candidate = re.sub(r"[\s._-]+$", "", title_candidate).strip()
         if title_candidate:
-            parsed["title"] = parsed.get("title") or title_candidate
-        if not parsed.get("quality"):
-            parsed["quality"] = "HD"
+            parsed["title"] = title_candidate
 
+    simple_movie = None
     if parsed.get("season") is None and parsed.get("episode") is None:
         base_name = re.sub(r"\.[a-z0-9]{2,4}$", "", name, flags=re.IGNORECASE).strip()
         simple_movie = _SIMPLE_MOVIE_YEAR_RE.match(base_name)
         if simple_movie:
             parsed["title"] = simple_movie.group("title").strip()
             parsed["year"] = int(simple_movie.group("year"))
-            if not parsed.get("quality"):
-                parsed["quality"] = "HD"
 
     if _guessit:
         try:
@@ -69,6 +68,12 @@ def parse_media_name(name: str) -> dict:
             parsed["quality"] = parsed["quality"] or first(g.get("screen_size"))
         except Exception as e:
             LOGGER.warning(f"GuessIt parsing failed for {name}: {e}")
+
+    # The simple formats are intentionally allowed without a quality token.
+    # Apply the fallback only after GuessIt has had a chance to detect 1080p,
+    # 2160p, etc., so an explicit quality is never overwritten by HD.
+    if (simple_ep or simple_movie) and not parsed.get("quality"):
+        parsed["quality"] = "HD"
 
     try:
         if parsed.get("season") is not None and int(parsed["season"]) == 0:
@@ -172,4 +177,4 @@ def analyze_metadata_failure(filename: str) -> str:
         return "The name spans multiple seasons (e.g. S01-S03) that can't be filed as one entry. Upload one season per file. Combined episode packs within a single season are fine when named like 'Show S02 E01-E05' or 'Show S02 Combined'."
     if not quality: return "No video quality/resolution was found. Add one to the caption (e.g. 480p, 720p, 1080p or 2160p)."
     if not title: return "No title could be detected. Rename or caption the file with a clear title."
-    return "Could not match this title on the configured providers. Fix the title/year in the caption, or add an IMDb link/id (tt...) or a TMDB link/id, then forward it again."
+    return "Could not match this title on the configured providers. Fix the title/year in the caption, or add an IMDb link/id (tt...) or a TMDB link/id (tt...) or a TMDB link/id, then forward it again."
