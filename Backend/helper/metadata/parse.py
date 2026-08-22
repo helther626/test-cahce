@@ -37,9 +37,8 @@ def parse_media_name(name: str) -> dict:
     if simple_ep and parsed.get("season") is None:
         parsed["season"] = 1
         parsed["episode"] = int(simple_ep.group(1))
-        title_candidate = re.sub(r"\.[a-z0-9]{2,4}$", "", name, flags=re.IGNORECASE)
-        title_candidate = _EXPLICIT_EP_ONLY_RE.sub(" ", title_candidate, count=1)
-        title_candidate = re.sub(r"[\s._-]+$", "", title_candidate).strip()
+        title_source = re.sub(r"\.[a-z0-9]{2,4}$", "", name, flags=re.IGNORECASE)
+        title_candidate = title_source[:simple_ep.start()].strip(" ._-")
         if title_candidate:
             parsed["title"] = title_candidate
 
@@ -177,4 +176,4 @@ def analyze_metadata_failure(filename: str) -> str:
         return "The name spans multiple seasons (e.g. S01-S03) that can't be filed as one entry. Upload one season per file. Combined episode packs within a single season are fine when named like 'Show S02 E01-E05' or 'Show S02 Combined'."
     if not quality: return "No video quality/resolution was found. Add one to the caption (e.g. 480p, 720p, 1080p or 2160p)."
     if not title: return "No title could be detected. Rename or caption the file with a clear title."
-    return "Could not match this title on the configured providers. Fix the title/year in the caption, or add an IMDb link/id (tt...) or a TMDB link/id (tt...) or a TMDB link/id, then forward it again."
+    return "Could not match this title on the configured providers. Fix the title/year in the caption, or add an IMDb link/id (tt...) or a TMDB link/id, then forward it again."
