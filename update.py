@@ -35,7 +35,7 @@ load_dotenv("config.env")
 def _fetch_upstream_from_db() -> tuple[str | None, str]:
     try:
         from pymongo import MongoClient
-        raw_uris = environ.get("DATABASE", "")          
+        raw_uris = environ.get("DATABASE", "")
         uris = [u.strip() for u in raw_uris.replace(",", " ").split() if u.strip()]
         if not uris:
             log_info("update.py: No DATABASE found — skipping DB settings lookup.")
@@ -47,7 +47,7 @@ def _fetch_upstream_from_db() -> tuple[str | None, str]:
         client.close()
 
         if doc:
-            repo   = (doc.get("upstream_repo")   or "").strip() or None
+            repo = (doc.get("upstream_repo") or "").strip() or None
             branch = (doc.get("upstream_branch") or "").strip() or "master"
             return repo, branch
 
@@ -57,36 +57,50 @@ def _fetch_upstream_from_db() -> tuple[str | None, str]:
     return None, "master"
 
 
-# ── Priority: DB value  >  config.env value ──────────────────────────────────
+# ── Safety gate ──────────────────────────────────────────────────────────────
+# Never overwrite the deployed custom repository merely because an old
+# upstream_repo value exists in MongoDB. Startup sync is opt-in via
+# ENABLE_UPSTREAM_UPDATE=true.
+if environ.get("ENABLE_UPSTREAM_UPDATE", "false").strip().lower() != "true":
+    log_info("update.py: Startup upstream sync disabled — keeping deployed repository unchanged.")
+    raise SystemExit(0)
+
+# ── Priority: DB value > config.env value ────────────────────────────────────
 db_repo, db_branch = _fetch_upstream_from_db()
 
-UPSTREAM_REPO   = db_repo   or environ.get("UPSTREAM_REPO",   "").strip() or None
+UPSTREAM_REPO = db_repo or environ.get("UPSTREAM_REPO", "").strip() or None
 UPSTREAM_BRANCH = db_branch or environ.get("UPSTREAM_BRANCH", "").strip() or "master"
 
-# ── Git update ────────────────────────────────────────────────────────────────
-if UPSTREAM_REPO:
-    if Path(".git").exists():
-        srun(["rm", "-rf", ".git"])
+if not UPSTREAM_REPO:
+    log_info("update.py: No upstream repository configured — skipping update.")
+    raise SystemExit(0)
 
-    update_cmd = (
-        f"git init -q && "
-        f"git config --global user.email 'doc.adhikari@gmail.com' && "
-        f"git config --global user.name 'weebzone' && "
-        f"git add . && git commit -sm 'update' -q && "
-        f"git remote add origin {UPSTREAM_REPO} && "
-        f"git fetch origin -q && "
-        f"git reset --hard origin/{UPSTREAM_BRANCH} -q"
-    )
+# ── Git update ───────────────────────────────────────────────────────────────
+if Path(".git").exists():
+    srun(["rm", "-rf", ".git"])
 
-    update = srun(update_cmd, shell=True)
-    repo = UPSTREAM_REPO.strip("/").split("/")
+update_cmd = (
+    f"git init -q && "
+    f"git config --global user.email 'doc.adhikari@gmail.com' && "
+    f"git config --global user.name 'weebzone' && "
+    f"git add . && git commit -sm 'update' -q && "
+    f"git remote add origin {UPSTREAM_REPO} && "
+    f"git fetch origin -q && "
+    f"git reset --hard origin/{UPSTREAM_BRANCH} -q"
+)
+
+update = srun(update_cmd, shell=True)
+repo = UPSTREAM_REPO.strip("/").split("/")
+if len(repo) >= 2:
     repo_url = f"https://github.com/{repo[-2]}/{repo[-1]}"
-    log_info(f"UPSTREAM_REPO: {repo_url} | UPSTREAM_BRANCH: {UPSTREAM_BRANCH}")
+else:
+    repo_url = UPSTREAM_REPO
+log_info(f"UPSTREAM_REPO: {repo_url} | UPSTREAM_BRANCH: {UPSTREAM_BRANCH}")
 
-    if update.returncode == 0:
-        log_info("Successfully updated with latest commits!!")
-        commit_check = srun(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
-        if commit_check.returncode == 0:
-            log_info(f"Latest commit ID: {commit_check.stdout.strip()}")
-    else:
-        log_error("❌ Update failed! Retry or ask for support.")
+if update.returncode == 0:
+    log_info("Successfully updated with latest commits!!")
+    commit_check = srun(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+    if commit_check.returncode == 0:
+        log_info(f"Latest commit ID: {commit_check.stdout.strip()}")
+else:
+    log_error("❌ Update failed! Retry or ask for support.")
