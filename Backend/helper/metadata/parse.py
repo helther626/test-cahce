@@ -17,6 +17,7 @@ _EXPLICIT_NXNN_RE = re.compile(r"(?i)\b\d{1,2}x\d{2,3}\b")
 _EXPLICIT_SEASON_WORD_RE = re.compile(r"(?i)\b(?:season|series)\s*0*\d{1,2}\b")
 _EXPLICIT_EP_ONLY_RE = re.compile(r"(?i)(?:^|[\s._-])ep\s*0*(\d{1,4})(?=[\s._-]|$)")
 _SIMPLE_MOVIE_YEAR_RE = re.compile(r"^(?P<title>.+?)\s*\((?P<year>(?:19|20)\d{2})\)\s*(?:[._ -].*)?$", re.IGNORECASE)
+_YEAR_IN_TITLE_RE = re.compile(r"^(?P<title>.+?)\s*\((?P<year>(?:19|20)\d{2})\)\s*$", re.IGNORECASE)
 
 
 def parse_media_name(name: str) -> dict:
@@ -40,7 +41,12 @@ def parse_media_name(name: str) -> dict:
         title_source = re.sub(r"\.[a-z0-9]{2,4}$", "", name, flags=re.IGNORECASE)
         title_candidate = title_source[:simple_ep.start()].strip(" ._-")
         if title_candidate:
-            parsed["title"] = title_candidate
+            year_match = _YEAR_IN_TITLE_RE.match(title_candidate)
+            if year_match:
+                parsed["title"] = year_match.group("title").strip()
+                parsed["year"] = int(year_match.group("year"))
+            else:
+                parsed["title"] = title_candidate
 
     simple_movie = None
     if parsed.get("season") is None and parsed.get("episode") is None:
