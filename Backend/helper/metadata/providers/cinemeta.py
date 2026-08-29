@@ -103,6 +103,39 @@ async def search_title_multi(query: str, type: str, limit: int = 8) -> List[Dict
     return results
 
 
+async def _fetch_imdb_suggestion_detail(imdb_id: str, media_type: str) -> Optional[Dict[str, Any]]:
+    """Resolve an exact IMDb id through IMDb's lightweight suggestion endpoint."""
+    try:
+        data = await _fetch_json(f"https://v3.sg.media-imdb.com/suggestion/x/{imdb_id}.json")
+        for item in (data or {}).get("d") or []:
+            if item.get("id") != imdb_id:
+                continue
+            title = item.get("l") or ""
+            year = item.get("y") or ""
+            image = item.get("i")
+            poster = image.get("imageUrl") if isinstance(image, dict) else ""
+            return {
+                "id": imdb_id,
+                "imdb_id": imdb_id,
+                "title": title,
+                "plot": "",
+                "poster": poster or "",
+                "background": "",
+                "logo": "",
+                "genre": [],
+                "cast": [],
+                "runtime": "",
+                "rating": {"star": 0},
+                "releaseDetailed": {"year": int(year) if str(year).isdigit() else extract_first_year(year)},
+                "moviedb_id": None,
+                "type": media_type,
+                "videos": [],
+            }
+    except Exception as e:
+        LOGGER.warning(f"IMDb suggestion fallback failed [{imdb_id}]: {e}")
+    return None
+
+
 async def _fetch_imdb_web_detail(imdb_id: str) -> Optional[Dict[str, Any]]:
     """Fallback for valid IMDb titles missing from Cinemeta."""
     try:
@@ -191,6 +224,9 @@ async def get_detail(imdb_id: str, media_type: str) -> Optional[Dict[str, Any]]:
             "videos": meta.get("videos") or [],
         }
 
+    suggestion = await _fetch_imdb_suggestion_detail(imdb_id, media_type)
+    if suggestion:
+        return suggestion
     return await _fetch_imdb_web_detail(imdb_id)
 
 
@@ -283,7 +319,7 @@ async def cached_detail(imdb_id: str, media_type: str):
     async def _produce():
         return await get_detail(imdb_id=imdb_id, media_type=media_type)
 
-    return await cached_call(IMDB_CACHE, f"v2::{imdb_id}", "imdb_detail", _produce)
+    return await cached_call(IMDB_CACHE, f"v3::{imdb_id}", "imdb_detail", _produce)
 
 
 async def cached_season(imdb_id: str, season, episode):
