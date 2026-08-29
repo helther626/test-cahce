@@ -166,12 +166,51 @@ async def _get_media_details(
     absolute_episode: int = None,
 ):
     #----- Resolve legacy Stremio IMDb IDs before every metadata/episode
-    #----- lookup. This makes old installed catalogs and cached Stremio IDs
-    #----- transparently point at the newly relinked media document.
-    resolved_imdb = await _resolve_alias(self, imdb_id, "tv" if season_number is not None or episode_number is not None else "movie")
+    #----- lookup. Episode/season requests identify TV explicitly. A bare
+    #----- series Meta request does not, so try the TV alias first and then
+    #----- the movie alias instead of incorrectly treating every bare IMDb
+    #----- ID as a movie.
+    if imdb_id:
+        is_tv_request = season_number is not None or episode_number is not None
+        if is_tv_request:
+            resolved_imdb = await _resolve_alias(self, imdb_id, "tv")
+            return await _ORIGINAL_GET_MEDIA_DETAILS(
+                self,
+                imdb_id=resolved_imdb,
+                season_number=season_number,
+                episode_number=episode_number,
+                kitsu_id=kitsu_id,
+                absolute_episode=absolute_episode,
+            )
+
+        resolved_tv_imdb = await _resolve_alias(self, imdb_id, "tv")
+        tv_result = await _ORIGINAL_GET_MEDIA_DETAILS(
+            self,
+            imdb_id=resolved_tv_imdb,
+            season_number=season_number,
+            episode_number=episode_number,
+            kitsu_id=kitsu_id,
+            absolute_episode=absolute_episode,
+        )
+        if tv_result:
+            return tv_result
+
+        resolved_movie_imdb = await _resolve_alias(self, imdb_id, "movie")
+        if resolved_movie_imdb != resolved_tv_imdb:
+            return await _ORIGINAL_GET_MEDIA_DETAILS(
+                self,
+                imdb_id=resolved_movie_imdb,
+                season_number=season_number,
+                episode_number=episode_number,
+                kitsu_id=kitsu_id,
+                absolute_episode=absolute_episode,
+            )
+        return tv_result
+
+    #----- Kitsu requests have no IMDb identity to relink.
     return await _ORIGINAL_GET_MEDIA_DETAILS(
         self,
-        imdb_id=resolved_imdb,
+        imdb_id=None,
         season_number=season_number,
         episode_number=episode_number,
         kitsu_id=kitsu_id,
