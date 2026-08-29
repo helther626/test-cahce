@@ -17,11 +17,18 @@ _EXPLICIT_NXNN_RE = re.compile(r"(?i)\b\d{1,2}x\d{2,3}\b")
 _EXPLICIT_SEASON_WORD_RE = re.compile(r"(?i)\b(?:season|series)\s*0*\d{1,2}\b")
 _EXPLICIT_EP_ONLY_RE = re.compile(r"(?i)(?:^|[\s._-])ep\s*0*(\d{1,4})(?=[\s._-]|$)")
 _SIMPLE_MOVIE_YEAR_RE = re.compile(r"^(?P<title>.+?)\s*\((?P<year>(?:19|20)\d{2})\)\s*(?:[._ -].*)?$", re.IGNORECASE)
+_MALAYSUB_RE = re.compile(r"(?i)(?<![\w])MalaySub(?![\w])")
 
 
 def parse_media_name(name: str) -> dict:
+    #----- MalaySub is an optional caption tag. Strip only that tag before the
+    #----- existing PTN/GuessIt logic so legacy filename formats and explicit
+    #----- TMDB/IMDb ids continue to be parsed exactly as before.
+    original_name = name or ""
+    malaysub = bool(_MALAYSUB_RE.search(original_name))
+    parse_name = _MALAYSUB_RE.sub(" ", original_name)
     try:
-        ptn = PTN.parse(name) or {}
+        ptn = PTN.parse(parse_name) or {}
     except Exception as e:
         LOGGER.warning(f"PTN parsing failed for {name}: {e}")
         ptn = {}
@@ -29,22 +36,23 @@ def parse_media_name(name: str) -> dict:
     parsed = {
         "title": ptn.get("title"), "year": ptn.get("year"), "season": ptn.get("season"),
         "episode": ptn.get("episode"), "quality": ptn.get("resolution"), "excess": ptn.get("excess"),
+        "malaysub": malaysub,
     }
 
     # EP-only is explicitly Season 1. Do this whenever no season was found,
     # even if PTN/GuessIt already extracted the episode number.
-    simple_ep = _EXPLICIT_EP_ONLY_RE.search(name)
+    simple_ep = _EXPLICIT_EP_ONLY_RE.search(parse_name)
     if simple_ep and parsed.get("season") is None:
         parsed["season"] = 1
         parsed["episode"] = int(simple_ep.group(1))
-        title_source = re.sub(r"\.[a-z0-9]{2,4}$", "", name, flags=re.IGNORECASE)
+        title_source = re.sub(r"\.[a-z0-9]{2,4}$", "", parse_name, flags=re.IGNORECASE)
         title_candidate = title_source[:simple_ep.start()].strip(" ._-")
         if title_candidate:
             parsed["title"] = title_candidate
 
     simple_movie = None
     if parsed.get("season") is None and parsed.get("episode") is None:
-        base_name = re.sub(r"\.[a-z0-9]{2,4}$", "", name, flags=re.IGNORECASE).strip()
+        base_name = re.sub(r"\.[a-z0-9]{2,4}$", "", parse_name, flags=re.IGNORECASE).strip()
         simple_movie = _SIMPLE_MOVIE_YEAR_RE.match(base_name)
         if simple_movie:
             parsed["title"] = simple_movie.group("title").strip()
@@ -52,11 +60,11 @@ def parse_media_name(name: str) -> dict:
 
     if _guessit:
         try:
-            g = _guessit(name)
+            g = _guessit(parse_name)
             parsed["title"] = parsed["title"] or first(g.get("title"))
             parsed["year"] = parsed["year"] or first(g.get("year"))
             if parsed["season"] is None and parsed["episode"] is None:
-                has_anchor = bool(_EXPLICIT_SXXEXX_RE.search(name) or _EXPLICIT_NXNN_RE.search(name) or _EXPLICIT_SEASON_WORD_RE.search(name))
+                has_anchor = bool(_EXPLICIT_SXXEXX_RE.search(parse_name) or _EXPLICIT_NXNN_RE.search(parse_name) or _EXPLICIT_SEASON_WORD_RE.search(parse_name))
                 if has_anchor:
                     g_season = first(g.get("season"))
                     if g_season is not None:
@@ -121,7 +129,7 @@ def extract_absolute_episode(filename: str, parsed: dict | None = None) -> int |
     cleaned = re.sub(r"\.[a-z0-9]{2,4}$", " ", name, flags=re.I)
     cleaned = _RELEASE_GROUP_RE.sub(" ", cleaned)
     cleaned = _RES_WITH_P_RE.sub(" ", cleaned)
-    if not _RES_WITH_P_RE.search(name): cleaned = _RES_BARE_TRAILING_RE.sub(" ", cleaned)
+    if not _RES_WITH_P_RE.search(parse_name): cleaned = _RES_BARE_TRAILING_RE.sub(" ", cleaned)
     cleaned = _QUALITY_TOKEN_RE.sub(" ", cleaned)
     cleaned = _YEAR_RE.sub(" ", cleaned)
     cleaned = re.sub(r"[\s._-]+", " ", cleaned).strip()
