@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from typing import Any, Dict, List, Optional
 
@@ -102,30 +103,97 @@ async def search_title_multi(query: str, type: str, limit: int = 8) -> List[Dict
     return results
 
 
+async def _fetch_imdb_web_detail(imdb_id: str) -> Optional[Dict[str, Any]]:
+    """Fallback for valid IMDb titles missing from Cinemeta."""
+    try:
+        client = await _get_client()
+        response = await client.get(
+            f"https://www.imdb.com/title/{imdb_id}/",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; Telegram-Stremio/1.0)"},
+        )
+        if response.status_code != 200:
+            return None
+
+        match = re.search(
+            r'<script[^>]+type=["\\']application/ld\\+json["\\'][^>]*>(.*?)</script>',
+            response.text,
+            re.S | re.I,
+        )
+        if not match:
+            return None
+
+        raw = json.loads(match.group(1))
+        items = raw if isinstance(raw, list) else [raw]
+        data = next(
+            (
+                item for item in items
+                if isinstance(item, dict) and item.get("@type") in ("Movie", "TVSeries", "TVEpisode")
+            ),
+            None,
+        )
+        if not data:
+            return None
+
+        image = data.get("image") or ""
+        if isinstance(image, list):
+            image = image[0] if image else ""
+
+        actors = []
+        for person in data.get("actor") or []:
+            if isinstance(person, dict) and person.get("name"):
+                actors.append(person["name"])
+
+        return {
+            "id": imdb_id,
+            "imdb_id": imdb_id,
+            "title": data.get("name") or "",
+            "plot": data.get("description") or "",
+            "poster": image,
+            "background": "",
+            "logo": "",
+            "genre": data.get("genre") or [],
+            "cast": actors,
+            "runtime": data.get("duration") or "",
+            "rating": {
+                "star": float((data.get("aggregateRating") or {}).get("ratingValue") or 0) or 0
+            },
+            "releaseDetailed": {"year": extract_first_year(data.get("datePublished") or "")},
+            "moviedb_id": None,
+            "type": media_type,
+            "videos": [],
+        }
+    except Exception as e:
+        LOGGER.warning(f"IMDb web fallback failed [{imdb_id}]: {e}")
+        return None
+
+
 async def get_detail(imdb_id: str, media_type: str) -> Optional[Dict[str, Any]]:
     ctype = _cinemeta_type(media_type)
     url = f"{BASE_URL}/meta/{ctype}/{imdb_id}.json"
     data = await _fetch_json(url)
     meta = (data or {}).get("meta")
-    if not meta:
-        return None
-    return {
-        "id": imdb_id,
-        "imdb_id": imdb_id,
-        "title": meta.get("name", ""),
-        "plot": meta.get("description", ""),
-        "poster": meta.get("poster", ""),
-        "background": meta.get("background", ""),
-        "logo": meta.get("logo", ""),
-        "genre": meta.get("genres") or meta.get("genre") or [],
-        "cast": meta.get("cast") or [],
-        "runtime": meta.get("runtime"),
-        "rating": {"star": float(meta.get("imdbRating") or 0) or 0},
-        "releaseDetailed": {"year": extract_first_year(meta.get("releaseInfo"))},
-        "moviedb_id": meta.get("moviedb_id") or meta.get("tmdb_id"),
-        "type": media_type,
-        "videos": meta.get("videos") or [],
-    }
+    if meta:
+        return {
+            "id": imdb_id,
+            "imdb_id": imdb_id,
+            "title": meta.get("name", ""),
+            "plot": meta.get("description", ""),
+            "poster": meta.get("poster", ""),
+            "background": meta.get("background", ""),
+            "logo": meta.get("logo", ""),
+            "genre": meta.get("genres") or meta.get("genre") or [],
+            "cast": meta.get("cast") or [],
+            "runtime": meta.get("runtime"),
+            "rating": {"star": float(meta.get("imdbRating") or 0) or 0},
+            "releaseDetailed": {"year": extract_first_year(meta.get("releaseInfo"))},
+            "moviedb_id": meta.get("moviedb_id") or meta.get("tmdb_id"),
+            "type": media_type,
+            "videos": meta.get("videos") or [],
+        }
+
+    return await _fetch_imdb_web_detail(imdb_id)
+
+
 
 
 async def get_season(imdb_id: str, season_id, episode_id) -> Dict[str, Any]:
@@ -215,7 +283,7 @@ async def cached_detail(imdb_id: str, media_type: str):
     async def _produce():
         return await get_detail(imdb_id=imdb_id, media_type=media_type)
 
-    return await cached_call(IMDB_CACHE, imdb_id, "imdb_detail", _produce)
+    return await cached_call(IMDB_CACHE, f"v2::{imdb_id}", "imdb_detail", _produce)
 
 
 async def cached_season(imdb_id: str, season, episode):
