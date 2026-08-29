@@ -598,20 +598,3 @@ async def fetch_selected_tv_metadata(selected_id: str) -> dict | None:
             "media_type": "tv",
         }
 
-    images = format_imdb_images(imdb_id)
-    return {
-        "tmdb_id": int(imdb_tv.get("moviedb_id")) if imdb_tv.get("moviedb_id") else None,
-        "imdb_id": imdb_id,
-        "metadata_source": "imdb",
-        "title": imdb_tv.get("title", ""),
-        "release_year": imdb_tv.get("releaseDetailed", {}).get("year", 0),
-        "rating": imdb_tv.get("rating", {}).get("star", 0),
-        "description": imdb_tv.get("plot", ""),
-        "poster": images["poster"],
-        "backdrop": images["backdrop"],
-        "logo": images["logo"],
-        "genres": imdb_tv.get("genre", []),
-        "cast": imdb_tv.get("cast", []),
-        "runtime": str(imdb_tv.get("runtime") or ""),
-        "media_type": "tv",
-    }
