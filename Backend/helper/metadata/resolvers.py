@@ -24,13 +24,17 @@ async def resolve_movie(
 ) -> Optional[dict]:
     imdb_id, tmdb_id, explicit_imdb, force_tmdb = split_default_id(default_id)
 
-    # Explicit TMDB id
+    # Explicit TMDB id is authoritative. Never fall through to a title search
+    # if that exact ID cannot be resolved.
     if tmdb_id and force_tmdb:
         movie = await tmdb.details("movie", tmdb_id)
         if movie:
             return tmdb.build_movie_payload(movie, quality, encoded_string)
+        LOGGER.warning(f"Explicit TMDB movie fetch failed [{tmdb_id}]")
+        return None
 
-    # Explicit IMDb id → Cinemeta
+    # Explicit IMDb id is authoritative. Never fall through to TMDB search
+    # or another IMDb candidate if that exact ID cannot be resolved.
     if imdb_id and explicit_imdb:
         try:
             detail = await cinemeta.cached_detail(imdb_id, "movie")
@@ -38,6 +42,7 @@ async def resolve_movie(
                 return cinemeta.build_movie_payload(detail, imdb_id, title, quality, encoded_string)
         except Exception as e:
             LOGGER.warning(f"Cinemeta explicit movie fetch failed [{imdb_id}]: {e}")
+        return None
 
     # 1) TMDB first
     if not tmdb_id:
@@ -85,13 +90,18 @@ async def resolve_series(
 ) -> Optional[dict]:
     imdb_id, tmdb_id, explicit_imdb, force_tmdb = split_default_id(default_id)
 
-    # Explicit overrides skip the chain
+    # Explicit TMDB id is authoritative. Never fall through to another
+    # provider/search if that exact ID cannot be resolved.
     if tmdb_id and force_tmdb:
         tv = await tmdb.details("tv", tmdb_id)
         if tv:
             ep = await tmdb.episode_details(tmdb_id, season, episode)
             return tmdb.build_tv_payload(tv, ep, season, episode, quality, encoded_string)
+        LOGGER.warning(f"Explicit TMDB TV fetch failed [{tmdb_id}]")
+        return None
 
+    # Explicit IMDb id is authoritative. Never fall through to TVDB/TMDB
+    # search if that exact IMDb ID cannot be resolved.
     if imdb_id and explicit_imdb:
         try:
             detail = await cinemeta.cached_detail(imdb_id, "tvSeries")
@@ -102,6 +112,7 @@ async def resolve_series(
                 )
         except Exception as e:
             LOGGER.warning(f"Cinemeta explicit TV fetch failed [{imdb_id}]: {e}")
+        return None
 
     # 1) TVDB
     try:

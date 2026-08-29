@@ -508,6 +508,7 @@ def _to_selection_payload(data: dict, media_type: str) -> dict:
         "cast": data.get("cast", []),
         "runtime": data.get("runtime"),
         "media_type": media_type,
+        "metadata_source": data.get("metadata_source"),
     }
 
 
@@ -516,8 +517,21 @@ async def fetch_selected_movie_metadata(selected_id: str) -> dict | None:
     if not selected_id:
         return None
     data = await resolve_movie(
-        title="manual-rescan", encoded_string=None, year=None, quality=None, default_id=selected_id
+        title="manual-rescan", encoded_string=None, quality=None, year=None, default_id=selected_id
     )
+    if not data:
+        return None
+
+    # Manual selection is authoritative: keep the provider identity chosen by
+    # the admin instead of allowing a mapped TMDB id to become the new source.
+    imdb_id, tmdb_id, explicit_imdb, use_tmdb = split_default_id(selected_id)
+    if explicit_imdb and imdb_id:
+        data["imdb_id"] = imdb_id
+        data["metadata_source"] = "imdb"
+    elif use_tmdb and tmdb_id:
+        data["tmdb_id"] = int(tmdb_id)
+        data["metadata_source"] = "tmdb"
+
     return _to_selection_payload(data, "movie") if data else None
 
 
@@ -527,22 +541,36 @@ async def fetch_selected_tv_metadata(selected_id: str) -> dict | None:
     if not imdb_id and not tmdb_id:
         return None
 
-    imdb_tv = None
     if imdb_id and not use_tmdb:
         try:
             imdb_tv = await cinemeta.get_detail(imdb_id=imdb_id, media_type="tvSeries")
-        except Exception:
+        except Exception as e:
+            LOGGER.warning(f"IMDb explicit TV fetch failed [{imdb_id}]: {e}")
             imdb_tv = None
-            use_tmdb = True
 
-    if use_tmdb or not imdb_tv:
-        if not tmdb_id and imdb_tv and imdb_tv.get("moviedb_id"):
-            try:
-                tmdb_id = int(imdb_tv["moviedb_id"])
-            except Exception:
-                tmdb_id = None
-        if not tmdb_id:
+        # An explicit IMDb selection must never fall through to TMDB.
+        if not imdb_tv:
             return None
+
+        images = format_imdb_images(imdb_id)
+        return {
+            "tmdb_id": int(imdb_tv.get("moviedb_id")) if imdb_tv.get("moviedb_id") else None,
+            "imdb_id": imdb_id,
+            "metadata_source": "imdb",
+            "title": imdb_tv.get("title", ""),
+            "release_year": imdb_tv.get("releaseDetailed", {}).get("year", 0),
+            "rating": imdb_tv.get("rating", {}).get("star", 0),
+            "description": imdb_tv.get("plot", ""),
+            "poster": images["poster"] or imdb_tv.get("poster") or "",
+            "backdrop": images["backdrop"] or imdb_tv.get("background") or "",
+            "logo": images["logo"] or imdb_tv.get("logo") or "",
+            "genres": imdb_tv.get("genre", []),
+            "cast": imdb_tv.get("cast", []),
+            "runtime": str(imdb_tv.get("runtime") or ""),
+            "media_type": "tv",
+        }
+
+    if use_tmdb and tmdb_id:
         tv = await tmdb.details("tv", tmdb_id)
         if not tv:
             return None
@@ -553,6 +581,7 @@ async def fetch_selected_tv_metadata(selected_id: str) -> dict | None:
         return {
             "tmdb_id": tv.id,
             "imdb_id": getattr(getattr(tv, "external_ids", None), "imdb_id", None),
+            "metadata_source": "tmdb",
             "title": tv.name,
             "release_year": getattr(first_air, "year", 0) if first_air else 0,
             "rating": getattr(tv, "vote_average", 0) or 0,
@@ -569,19 +598,3 @@ async def fetch_selected_tv_metadata(selected_id: str) -> dict | None:
             "media_type": "tv",
         }
 
-    images = format_imdb_images(imdb_id)
-    return {
-        "tmdb_id": int(imdb_tv.get("moviedb_id")) if imdb_tv.get("moviedb_id") else None,
-        "imdb_id": imdb_id,
-        "title": imdb_tv.get("title", ""),
-        "release_year": imdb_tv.get("releaseDetailed", {}).get("year", 0),
-        "rating": imdb_tv.get("rating", {}).get("star", 0),
-        "description": imdb_tv.get("plot", ""),
-        "poster": images["poster"],
-        "backdrop": images["backdrop"],
-        "logo": images["logo"],
-        "genres": imdb_tv.get("genre", []),
-        "cast": imdb_tv.get("cast", []),
-        "runtime": str(imdb_tv.get("runtime") or ""),
-        "media_type": "tv",
-    }

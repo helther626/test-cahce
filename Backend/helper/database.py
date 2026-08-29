@@ -2679,13 +2679,24 @@ class Database:
                 return current_doc.get(key)
             return new_value
 
-        new_tmdb_id = int(metadata.get("tmdb_id") or tmdb_id)
+        metadata_source = str(metadata.get("metadata_source") or "").strip().lower()
+        # The selected provider is authoritative. For an IMDb selection, the
+        # existing storage key remains the stream/container identity, while
+        # the metadata identity becomes IMDb. A mapped/synthetic TMDB value
+        # must never replace it.
+        if metadata_source == "imdb":
+            new_tmdb_id = int(tmdb_id)
+        elif metadata_source == "tmdb":
+            new_tmdb_id = int(metadata.get("tmdb_id") or tmdb_id)
+        else:
+            new_tmdb_id = int(metadata.get("tmdb_id") or tmdb_id)
         new_imdb_id = _pick("imdb_id")
 
         if collection_name == "movie":
             current_doc.update({
                 "tmdb_id": new_tmdb_id,
                 "imdb_id": new_imdb_id,
+                "metadata_source": metadata_source or current_doc.get("metadata_source") or "tmdb",
                 "title": _pick("title"),
                 "release_year": _pick("release_year"),
                 "rating": _pick("rating"),
@@ -2719,10 +2730,18 @@ class Database:
                 "updated_on": datetime.utcnow(),
             })
 
-        identity_filters = []
-        if new_imdb_id:
-            identity_filters.append({"imdb_id": new_imdb_id})
-        identity_filters.append({"tmdb_id": new_tmdb_id})
+        # Duplicate detection must follow the selected identity source.
+        # Otherwise an IMDb selection could collide with an unrelated TMDB
+        # title that happens to share the same numeric/mapped id.
+        if metadata_source == "imdb":
+            identity_filters = [{"imdb_id": new_imdb_id}] if new_imdb_id else []
+        elif metadata_source == "tmdb":
+            identity_filters = [{"tmdb_id": new_tmdb_id}]
+        else:
+            identity_filters = []
+            if new_imdb_id:
+                identity_filters.append({"imdb_id": new_imdb_id})
+            identity_filters.append({"tmdb_id": new_tmdb_id})
 
         existing_other = await collection.find_one({
             "$and": [{"$or": identity_filters}, {"_id": {"$ne": source_id}}]
@@ -2739,7 +2758,7 @@ class Database:
                 )
 
             for field in (
-                "tmdb_id", "imdb_id", "title", "release_year", "rating",
+                "tmdb_id", "imdb_id", "metadata_source", "title", "release_year", "rating",
                 "description", "poster", "backdrop", "logo", "genres",
                 "cast", "runtime", "media_type",
             ):

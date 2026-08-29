@@ -10,6 +10,8 @@ from Backend.logger import LOGGER
 AUTO_CATALOG_REGION = "IN"
 AUTO_SYNC_CONCURRENCY = 5
 RECENTLY_ADDED_DAYS = 30
+LATEST_MOVIES_START = "2025-01-01"
+LATEST_MOVIES_END = "2030-12-31"
 
 #----- User can choose exactly which auto catalogs are enabled.
 AUTO_CATALOG_DEFINITIONS = [
@@ -28,6 +30,7 @@ AUTO_CATALOG_DEFINITIONS = [
 
     {"key": "top_rated", "name": "Top Rated", "group": "Smart"},
     {"key": "recently_added", "name": "Recently Added", "group": "Smart"},
+    {"key": "latest_movies", "name": "Latest Movies", "group": "Smart"},
 
     {"key": "netflix", "name": "Netflix", "group": "OTT"},
     {"key": "prime_video", "name": "Prime Video", "group": "OTT"},
@@ -160,6 +163,7 @@ def _doc_item(doc: dict) -> dict:
         "media_type": media_type,
         "added_at": _doc_added_at(doc),
         "updated_on": doc.get("updated_on"),
+        "release_date": doc.get("release_date"),
         "visibility": doc.get("visibility") or "public",
         "allowed_tokens": doc.get("allowed_tokens") or [],
     }
@@ -287,6 +291,12 @@ def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, enabled
             except Exception:
                 pass
 
+    #----- Latest Movies uses TMDB's actual movie release_date, not the
+    #----- Telegram/import date and not just the release year.
+    release_date = str(details.get("release_date") or doc.get("release_date") or "").strip()
+    if media_type == "movie" and LATEST_MOVIES_START <= release_date <= LATEST_MOVIES_END:
+        tags.add("Latest Movies")
+
     genre_names = [g.get("name", "") for g in details.get("genres", []) or []]
     genre_lower = {g.lower() for g in genre_names}
 
@@ -328,6 +338,7 @@ def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, enabled
         "origin_country": origin_country,
         "production_countries": production_countries,
         "watch_providers": sorted(providers),
+        "release_date": release_date or None,
         "auto_tags": sorted(tags),
     }
 
@@ -371,9 +382,27 @@ async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict) -> tuple[dict, 
     media_type = _media_type(doc)
     tmdb_id = doc.get("tmdb_id")
 
-    #----- Resolve tmdb_id from imdb_id when missing (cached by media_type + imdb_id)
-    if not tmdb_id and doc.get("imdb_id"):
-        imdb_id = doc.get("imdb_id")
+    #----- IMDb-sourced metadata must not trust a stale TMDB id. Resolve the
+    #----- current TMDB identity from the explicit IMDb id for classification.
+    #----- TMDB-sourced records continue using their stored TMDB id unchanged.
+    metadata_source = str(doc.get("metadata_source") or "").strip().lower()
+    if metadata_source == "imdb" and doc.get("imdb_id"):
+        imdb_id = str(doc.get("imdb_id")).strip()
+
+        async def _find():
+            resp = await client.get(
+                f"https://api.themoviedb.org/3/find/{imdb_id}",
+                params={"api_key": api_key, "external_source": "imdb_id"},
+            )
+            if resp.status_code != 200:
+                return None
+            result_key = "tv_results" if media_type == "tv" else "movie_results"
+            results = resp.json().get(result_key) or []
+            return results[0].get("id") if results else None
+
+        tmdb_id = await _cached_call(_TMDB_FIND_CACHE, (media_type, imdb_id), "find", _find)
+    elif not tmdb_id and doc.get("imdb_id"):
+        imdb_id = str(doc.get("imdb_id")).strip()
 
         async def _find():
             resp = await client.get(
@@ -445,6 +474,7 @@ async def _classify_one(db, client: httpx.AsyncClient, semaphore: asyncio.Semaph
                 "origin_country": classification.get("origin_country", []),
                 "production_countries": classification.get("production_countries", []),
                 "watch_providers": classification.get("watch_providers", []),
+                "release_date": classification.get("release_date"),
                 "auto_tags": classification.get("auto_tags", []),
                 "auto_tags_updated_at": now,
                 "auto_catalog": {
@@ -595,7 +625,9 @@ async def _rebuild_auto_catalogs(db, catalog_items: Dict[str, List[dict]], enabl
             seen.add(key)
             unique_items.append(item)
 
-        if name in {"Recently Added Movies", "Recently Added Series"}:
+        if name == "Latest Movies":
+            unique_items.sort(key=lambda it: str(it.get("release_date") or ""), reverse=True)
+        elif name in {"Recently Added Movies", "Recently Added Series"}:
             unique_items.sort(key=lambda it: it.get("added_at") or datetime.min, reverse=True)
         else:
             unique_items.sort(key=lambda it: it.get("updated_on") or it.get("added_at") or datetime.min, reverse=True)
@@ -712,8 +744,15 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
                 async for _, _, doc, already_synced in _iter_all_media(db, force_refresh=force_refresh):
                     scanned += 1
 
-                    #----- Already-tagged titles skip TMDB; reuse their stored tags
-                    if already_synced:
+                    #----- Already-tagged titles normally skip TMDB. Latest Movies
+                    #----- needs the actual release_date, so hydrate older synced
+                    #----- movie documents that do not have it yet.
+                    needs_latest_release_date = (
+                        "Latest Movies" in enabled_names
+                        and _media_type(doc) == "movie"
+                        and not str(doc.get("release_date") or "").strip()
+                    )
+                    if already_synced and not needs_latest_release_date:
                         skipped += 1
                         collect(doc, doc.get("auto_tags") or [])
                         continue
