@@ -110,6 +110,11 @@ def clean_filename(filename: str) -> str:
     if not filename:
         return "unknown_file"
 
+    #----- Telegram/UI labels are not part of the actual filename.
+    #----- Strip only a leading "File Name:" label; do not alter real
+    #----- filenames that merely contain those words later in the name.
+    filename = re.sub(r"(?i)^\\s*file\\s*name\\s*:\\s*", "", filename, count=1)
+
     #----- 1 – Strip URLs that captions sometimes prepend
     filename = remove_urls(filename)
     
