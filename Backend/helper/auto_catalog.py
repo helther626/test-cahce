@@ -419,7 +419,7 @@ async def _cached_call(store: dict, key, ns: str, producer):
     return result
 
 
-async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict) -> tuple[dict, dict, dict]:
+async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict, *, include_release_dates: bool = False) -> tuple[dict, dict, dict]:
     api_key = tmdb_api_key()
     if not api_key:
         return {}, {}, {}
@@ -481,7 +481,7 @@ async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict) -> tuple[dict, 
         return resp.json() if resp.status_code == 200 else {}
 
     async def _release_dates():
-        if media_type != "movie":
+        if media_type != "movie" or not include_release_dates:
             return {}
         resp = await client.get(
             f"https://api.themoviedb.org/3/movie/{tmdb_id}/release_dates",
@@ -492,7 +492,7 @@ async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict) -> tuple[dict, 
     details, providers, release_dates = await asyncio.gather(
         _cached_call(_TMDB_DETAILS_CACHE, (media_type, tmdb_id), "details", _details),
         _cached_call(_TMDB_PROVIDERS_CACHE, (media_type, tmdb_id), "providers", _providers),
-        _cached_call(_TMDB_RELEASE_DATES_CACHE, tmdb_id, "release_dates", _release_dates),
+        _cached_call(_TMDB_RELEASE_DATES_CACHE, tmdb_id, "release_dates", _release_dates) if include_release_dates else asyncio.sleep(0, result={}),
         return_exceptions=True,
     )
     details = details if not isinstance(details, Exception) else {}
@@ -521,7 +521,14 @@ async def _iter_all_media(db, *, force_refresh: bool = False):
 async def _classify_one(db, client: httpx.AsyncClient, semaphore: asyncio.Semaphore, doc: dict, enabled_names: Set[str]) -> tuple[dict, dict]:
     async with semaphore:
         try:
-            details, watch_data, release_data = await asyncio.wait_for(_fetch_tmdb_data(client, doc), timeout=30)
+            details, watch_data, release_data = await asyncio.wait_for(
+                _fetch_tmdb_data(
+                    client,
+                    doc,
+                    include_release_dates="Latest Movies" in enabled_names and _media_type(doc) == "movie",
+                ),
+                timeout=30,
+            )
             classification = classify_media_from_tmdb(doc, details or {}, watch_data or {}, release_data or {}, enabled_names)
 
             now = datetime.utcnow()
