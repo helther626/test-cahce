@@ -219,12 +219,14 @@ def _select_latest_movie_date(release_data: dict, theatrical_fallback: str) -> T
     if digital_dates:
         return min(digital_dates), "digital"
 
-    fallback = str(theatrical_fallback or "").strip()[:10]
-    if fallback and fallback <= today:
-        theatrical_dates.append(fallback)
-
+    # Prefer TMDB's explicit Theatrical release type (3). Only fall back to
+    # the primary movie release_date when TMDB has no type-3 entry at all.
     if theatrical_dates:
         return min(theatrical_dates), "theatrical"
+
+    fallback = str(theatrical_fallback or "").strip()[:10]
+    if fallback and fallback <= today:
+        return fallback, "theatrical"
     return None, None
 
 
