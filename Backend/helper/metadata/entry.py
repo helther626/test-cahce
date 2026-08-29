@@ -13,6 +13,7 @@ from Backend.helper.metadata.common import (
     extract_default_id,
     format_imdb_images,
     format_tmdb_image,
+    gradient_cover_path,
     resolve_cover_url,
     split_default_id,
 )
@@ -43,6 +44,89 @@ def _is_anime_channel(channel) -> bool:
         return False
     target = str(channel).replace("-100", "")
     return any(str(c).strip().replace("-100", "") == target for c in anime_channels)
+
+
+def _build_unresolved_fallback(
+    *,
+    title: str,
+    year,
+    season,
+    episode,
+    quality: str,
+    encoded_string,
+    group_key,
+    part_number,
+    parsed: dict,
+) -> dict | None:
+    """Build a local metadata record when providers cannot identify a valid file.
+
+    A structurally valid movie/episode must not be treated as an unreadable
+    Telegram message merely because TMDB/IMDb/TVDB/Cinemeta have no match.
+    Provider-backed metadata remains preferred; this is only the final
+    resolution fallback.
+    """
+    if not title or not quality or not encoded_string:
+        return None
+
+    try:
+        year_int = int(year) if year else 0
+    except (TypeError, ValueError):
+        year_int = 0
+
+    is_tv = season is not None and episode is not None
+    if not is_tv:
+        media_type = "movie"
+        seed = f"fallback:movie:{title}:{year_int}"
+    else:
+        try:
+            season_int = int(season)
+            episode_int = int(episode)
+        except (TypeError, ValueError):
+            return None
+        media_type = "tv"
+        seed = f"fallback:tv:{title}:{year_int}:s{season_int}:e{episode_int}"
+
+    poster = resolve_cover_url(gradient_cover_path(title, portrait=True))
+    backdrop = resolve_cover_url(gradient_cover_path(title, portrait=False))
+
+    payload = {
+        "tmdb_id": None,
+        "imdb_id": None,
+        "title": title,
+        "title_english": None,
+        "original_title": None,
+        "year": year_int,
+        "year_end": None,
+        "rate": 0,
+        "description": "",
+        "poster": poster,
+        "backdrop": backdrop,
+        "logo": "",
+        "cast": [],
+        "runtime": "",
+        "genres": [],
+        "original_language": None,
+        "origin_country": [],
+        "media_type": media_type,
+        "quality": quality,
+        "encoded_string": encoded_string,
+        "group_key": group_key,
+        "part_number": part_number,
+        "is_anime": False,
+    }
+
+    if is_tv:
+        payload.update({
+            "season_number": season_int,
+            "episode_number": episode_int,
+            "episode_title": f"Episode {episode_int}",
+            "episode_backdrop": backdrop,
+            "episode_overview": "",
+            "episode_released": None,
+            "absolute_episode": None,
+        })
+
+    return ensure_media_ids(payload, seed=seed)
 
 
 def _resolve_default_id(override_id, filename) -> str | None:
@@ -220,7 +304,29 @@ async def metadata(
             result["part_number"] = part_number
         if result:
             ensure_media_ids(result, seed=str(result.get("title") or ""))
-        return result
+            return result
+
+        #----- A validly parsed file is still indexable when every metadata
+        #----- provider misses it. Dump/skip is reserved for files that cannot
+        #----- be structurally parsed, not for provider coverage gaps.
+        fallback = _build_unresolved_fallback(
+            title=title,
+            year=year,
+            season=season,
+            episode=episode,
+            quality=quality,
+            encoded_string=encoded_string,
+            group_key=group_key,
+            part_number=part_number,
+            parsed=parsed,
+        )
+        if fallback:
+            LOGGER.warning(
+                f"Metadata providers returned no match for '{title}' "
+                f"(year={year}, season={season}, episode={episode}); "
+                "indexing with local fallback metadata."
+            )
+        return fallback
     except Exception as e:
         LOGGER.error(f"Error while fetching metadata for {filename}: {e}\n{traceback.format_exc()}")
         return None
