@@ -174,6 +174,9 @@ def get_readable_time(seconds: int) -> str:
 #----- Build the display filename stored for a media entry: drop URLs, emoji and
 #----- decorative symbols, strip the split-part suffix (.001), and force a video extension.
 def finalize_media_name(title: str, is_split: bool = False) -> str:
+    #----- Telegram/UI labels are presentation text, not part of the stored filename.
+    #----- Strip only a leading "File Name:" label to keep the actual title intact.
+    title = re.sub(r"(?i)^\\s*file\\s*name\\s*:\\s*", "", title or "", count=1)
     title = _DECORATION_PATTERN.sub(" ", _EMOJI_PATTERN.sub(" ", remove_urls(title)))
     title = re.sub(r"\s+", " ", title).strip().replace(" .", ".")
 
