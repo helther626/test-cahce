@@ -13,6 +13,7 @@ from Backend.helper.metadata.common import (
     extract_default_id,
     format_imdb_images,
     format_tmdb_image,
+    gradient_cover_path,
     resolve_cover_url,
     split_default_id,
 )
