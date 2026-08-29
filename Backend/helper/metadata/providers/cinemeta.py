@@ -224,10 +224,16 @@ async def get_detail(imdb_id: str, media_type: str) -> Optional[Dict[str, Any]]:
             "videos": meta.get("videos") or [],
         }
 
+    # Prefer the full IMDb page metadata first. The suggestion endpoint is
+    # intentionally only a lightweight identity/poster fallback.
+    web_detail = await _fetch_imdb_web_detail(imdb_id)
+    if web_detail and web_detail.get("title"):
+        return web_detail
+
     suggestion = await _fetch_imdb_suggestion_detail(imdb_id, media_type)
     if suggestion:
         return suggestion
-    return await _fetch_imdb_web_detail(imdb_id)
+    return None
 
 
 
