@@ -1030,7 +1030,13 @@
             showErrorMessage('Please select a match first.');
             return;
         }
-        const selectedId = selectedRescanMatch.tmdb_id || selectedRescanMatch.imdb_id;
+        // Preserve the candidate's canonical identity. IMDb selections
+        // must stay IMDb IDs; their numeric TMDb mapping can point to a
+        // different title with the same name/year.
+        const selectedId = selectedRescanMatch.selected_id ||
+            (selectedRescanMatch.source === 'imdb'
+                ? selectedRescanMatch.imdb_id
+                : selectedRescanMatch.tmdb_id);
         if (!selectedId) {
             showErrorMessage('Selected match does not contain a valid IMDb/TMDb id.');
             return;
