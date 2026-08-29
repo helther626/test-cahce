@@ -761,6 +761,12 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
         settings_configured = await has_auto_catalog_settings(db)
         enabled_names = await _enabled_catalog_names(db)
 
+        #----- Release dates can change in TMDB without the media document changing.
+        #----- Clear only this cache at the start of each full sync so a newly-added
+        #----- Digital date is picked up immediately, while other TMDB caches remain intact.
+        if "Latest Movies" in enabled_names:
+            _TMDB_RELEASE_DATES_CACHE.clear()
+
         if not settings_configured or not enabled_names:
             finished_at = datetime.utcnow()
             summary = {
