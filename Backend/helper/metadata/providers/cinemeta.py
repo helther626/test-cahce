@@ -115,7 +115,7 @@ async def _fetch_imdb_web_detail(imdb_id: str) -> Optional[Dict[str, Any]]:
             return None
 
         match = re.search(
-            r'<script[^>]+type=["\\']application/ld\\+json["\\'][^>]*>(.*?)</script>',
+            r"""<script[^>]+type=["']application/ld\\+json["'][^>]*>(.*?)</script>""",
             response.text,
             re.S | re.I,
         )
