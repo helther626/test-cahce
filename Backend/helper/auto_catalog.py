@@ -382,9 +382,27 @@ async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict) -> tuple[dict, 
     media_type = _media_type(doc)
     tmdb_id = doc.get("tmdb_id")
 
-    #----- Resolve tmdb_id from imdb_id when missing (cached by media_type + imdb_id)
-    if not tmdb_id and doc.get("imdb_id"):
-        imdb_id = doc.get("imdb_id")
+    #----- IMDb-sourced metadata must not trust a stale TMDB id. Resolve the
+    #----- current TMDB identity from the explicit IMDb id for classification.
+    #----- TMDB-sourced records continue using their stored TMDB id unchanged.
+    metadata_source = str(doc.get("metadata_source") or "").strip().lower()
+    if metadata_source == "imdb" and doc.get("imdb_id"):
+        imdb_id = str(doc.get("imdb_id")).strip()
+
+        async def _find():
+            resp = await client.get(
+                f"https://api.themoviedb.org/3/find/{imdb_id}",
+                params={"api_key": api_key, "external_source": "imdb_id"},
+            )
+            if resp.status_code != 200:
+                return None
+            result_key = "tv_results" if media_type == "tv" else "movie_results"
+            results = resp.json().get(result_key) or []
+            return results[0].get("id") if results else None
+
+        tmdb_id = await _cached_call(_TMDB_FIND_CACHE, (media_type, imdb_id), "find", _find)
+    elif not tmdb_id and doc.get("imdb_id"):
+        imdb_id = str(doc.get("imdb_id")).strip()
 
         async def _find():
             resp = await client.get(
