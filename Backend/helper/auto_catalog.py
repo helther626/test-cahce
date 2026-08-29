@@ -11,7 +11,8 @@ AUTO_CATALOG_REGION = "IN"
 AUTO_SYNC_CONCURRENCY = 5
 RECENTLY_ADDED_DAYS = 30
 LATEST_MOVIES_START = "2025-01-01"
-LATEST_MOVIES_END = "2030-12-31"
+# Latest Movies uses a released date only; future TMDB dates must not surface early.
+LATEST_MOVIES_END = datetime.utcnow().strftime("%Y-%m-%d")
 
 #----- User can choose exactly which auto catalogs are enabled.
 AUTO_CATALOG_DEFINITIONS = [
@@ -164,6 +165,8 @@ def _doc_item(doc: dict) -> dict:
         "added_at": _doc_added_at(doc),
         "updated_on": doc.get("updated_on"),
         "release_date": doc.get("release_date"),
+        "latest_movie_date": doc.get("latest_movie_date"),
+        "latest_movie_date_type": doc.get("latest_movie_date_type"),
         "visibility": doc.get("visibility") or "public",
         "allowed_tokens": doc.get("allowed_tokens") or [],
     }
@@ -189,6 +192,42 @@ def _extract_provider_names(watch_data: dict) -> List[str]:
             if name:
                 names.append(name)
     return names
+
+
+def _select_latest_movie_date(release_data: dict, theatrical_fallback: str) -> Tuple[Optional[str], Optional[str]]:
+    """Choose the most useful released date for Latest Movies.
+
+    Prefer the earliest past Digital release date (TMDB type 4). If no past
+    Digital date exists, fall back to the earliest past Theatrical date (type 3).
+    Future dates are ignored so an upcoming digital release cannot surface early.
+    """
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    digital_dates: List[str] = []
+    theatrical_dates: List[str] = []
+
+    for country in (release_data or {}).get("results", []) or []:
+        for release in country.get("release_dates", []) or []:
+            date_value = str(release.get("release_date") or "").strip()[:10]
+            if not date_value or date_value > today:
+                continue
+            release_type = release.get("type")
+            if release_type == 4:
+                digital_dates.append(date_value)
+            elif release_type == 3:
+                theatrical_dates.append(date_value)
+
+    if digital_dates:
+        return min(digital_dates), "digital"
+
+    # Prefer TMDB's explicit Theatrical release type (3). Only fall back to
+    # the primary movie release_date when TMDB has no type-3 entry at all.
+    if theatrical_dates:
+        return min(theatrical_dates), "theatrical"
+
+    fallback = str(theatrical_fallback or "").strip()[:10]
+    if fallback and fallback <= today:
+        return fallback, "theatrical"
+    return None, None
 
 
 def _is_already_synced(doc: dict) -> bool:
@@ -251,7 +290,7 @@ async def _enabled_catalog_names(db) -> Set[str]:
     return {CATALOG_BY_KEY[key]["name"] for key in keys if key in CATALOG_BY_KEY}
 
 
-def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, enabled_names: Set[str]) -> dict:
+def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, release_data: dict, enabled_names: Set[str]) -> dict:
     tags: Set[str] = set()
     providers: Set[str] = set()
 
@@ -291,11 +330,16 @@ def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, enabled
             except Exception:
                 pass
 
-    #----- Latest Movies uses TMDB's actual movie release_date, not the
-    #----- Telegram/import date and not just the release year.
+    #----- Latest Movies prefers TMDB Digital release (type 4). If no released
+    #----- Digital date exists, fall back to the theatrical release (type 3).
+    #----- Future dates are ignored so an upcoming digital date cannot surface early.
     release_date = str(details.get("release_date") or doc.get("release_date") or "").strip()
-    if media_type == "movie" and LATEST_MOVIES_START <= release_date <= LATEST_MOVIES_END:
-        tags.add("Latest Movies")
+    latest_movie_date = None
+    latest_movie_date_type = None
+    if media_type == "movie":
+        latest_movie_date, latest_movie_date_type = _select_latest_movie_date(release_data, release_date)
+        if latest_movie_date and LATEST_MOVIES_START <= latest_movie_date <= LATEST_MOVIES_END:
+            tags.add("Latest Movies")
 
     genre_names = [g.get("name", "") for g in details.get("genres", []) or []]
     genre_lower = {g.lower() for g in genre_names}
@@ -339,6 +383,8 @@ def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, enabled
         "production_countries": production_countries,
         "watch_providers": sorted(providers),
         "release_date": release_date or None,
+        "latest_movie_date": latest_movie_date,
+        "latest_movie_date_type": latest_movie_date_type,
         "auto_tags": sorted(tags),
     }
 
@@ -346,6 +392,7 @@ def classify_media_from_tmdb(doc: dict, details: dict, watch_data: dict, enabled
 _TMDB_FIND_CACHE: dict = {}
 _TMDB_DETAILS_CACHE: dict = {}
 _TMDB_PROVIDERS_CACHE: dict = {}
+_TMDB_RELEASE_DATES_CACHE: dict = {}
 _TMDB_INFLIGHT: Dict[tuple, asyncio.Future] = {}
 
 
@@ -374,10 +421,10 @@ async def _cached_call(store: dict, key, ns: str, producer):
     return result
 
 
-async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict) -> tuple[dict, dict]:
+async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict, *, include_release_dates: bool = False) -> tuple[dict, dict, dict]:
     api_key = tmdb_api_key()
     if not api_key:
-        return {}, {}
+        return {}, {}, {}
 
     media_type = _media_type(doc)
     tmdb_id = doc.get("tmdb_id")
@@ -435,14 +482,25 @@ async def _fetch_tmdb_data(client: httpx.AsyncClient, doc: dict) -> tuple[dict, 
         )
         return resp.json() if resp.status_code == 200 else {}
 
-    details, providers = await asyncio.gather(
+    async def _release_dates():
+        if media_type != "movie" or not include_release_dates:
+            return {}
+        resp = await client.get(
+            f"https://api.themoviedb.org/3/movie/{tmdb_id}/release_dates",
+            params={"api_key": api_key},
+        )
+        return resp.json() if resp.status_code == 200 else {}
+
+    details, providers, release_dates = await asyncio.gather(
         _cached_call(_TMDB_DETAILS_CACHE, (media_type, tmdb_id), "details", _details),
         _cached_call(_TMDB_PROVIDERS_CACHE, (media_type, tmdb_id), "providers", _providers),
+        _cached_call(_TMDB_RELEASE_DATES_CACHE, tmdb_id, "release_dates", _release_dates) if include_release_dates else asyncio.sleep(0, result={}),
         return_exceptions=True,
     )
     details = details if not isinstance(details, Exception) else {}
     providers = providers if not isinstance(providers, Exception) else {}
-    return details, providers
+    release_dates = release_dates if not isinstance(release_dates, Exception) else {}
+    return details, providers, release_dates
 
 
 async def _iter_all_media(db, *, force_refresh: bool = False):
@@ -465,8 +523,15 @@ async def _iter_all_media(db, *, force_refresh: bool = False):
 async def _classify_one(db, client: httpx.AsyncClient, semaphore: asyncio.Semaphore, doc: dict, enabled_names: Set[str]) -> tuple[dict, dict]:
     async with semaphore:
         try:
-            details, watch_data = await asyncio.wait_for(_fetch_tmdb_data(client, doc), timeout=30)
-            classification = classify_media_from_tmdb(doc, details or {}, watch_data or {}, enabled_names)
+            details, watch_data, release_data = await asyncio.wait_for(
+                _fetch_tmdb_data(
+                    client,
+                    doc,
+                    include_release_dates="Latest Movies" in enabled_names and _media_type(doc) == "movie",
+                ),
+                timeout=30,
+            )
+            classification = classify_media_from_tmdb(doc, details or {}, watch_data or {}, release_data or {}, enabled_names)
 
             now = datetime.utcnow()
             update_data = {
@@ -475,6 +540,8 @@ async def _classify_one(db, client: httpx.AsyncClient, semaphore: asyncio.Semaph
                 "production_countries": classification.get("production_countries", []),
                 "watch_providers": classification.get("watch_providers", []),
                 "release_date": classification.get("release_date"),
+                "latest_movie_date": classification.get("latest_movie_date"),
+                "latest_movie_date_type": classification.get("latest_movie_date_type"),
                 "auto_tags": classification.get("auto_tags", []),
                 "auto_tags_updated_at": now,
                 "auto_catalog": {
@@ -626,7 +693,7 @@ async def _rebuild_auto_catalogs(db, catalog_items: Dict[str, List[dict]], enabl
             unique_items.append(item)
 
         if name == "Latest Movies":
-            unique_items.sort(key=lambda it: str(it.get("release_date") or ""), reverse=True)
+            unique_items.sort(key=lambda it: str(it.get("latest_movie_date") or ""), reverse=True)
         elif name in {"Recently Added Movies", "Recently Added Series"}:
             unique_items.sort(key=lambda it: it.get("added_at") or datetime.min, reverse=True)
         else:
@@ -696,6 +763,12 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
         settings_configured = await has_auto_catalog_settings(db)
         enabled_names = await _enabled_catalog_names(db)
 
+        #----- Release dates can change in TMDB without the media document changing.
+        #----- Clear only this cache at the start of each full sync so a newly-added
+        #----- Digital date is picked up immediately, while other TMDB caches remain intact.
+        if "Latest Movies" in enabled_names:
+            _TMDB_RELEASE_DATES_CACHE.clear()
+
         if not settings_configured or not enabled_names:
             finished_at = datetime.utcnow()
             summary = {
@@ -744,13 +817,12 @@ async def run_auto_catalog_sync(db, *, force: bool = False, force_refresh: bool 
                 async for _, _, doc, already_synced in _iter_all_media(db, force_refresh=force_refresh):
                     scanned += 1
 
-                    #----- Already-tagged titles normally skip TMDB. Latest Movies
-                    #----- needs the actual release_date, so hydrate older synced
-                    #----- movie documents that do not have it yet.
+                    #----- Latest Movies must re-check TMDB release dates on every
+                    #----- sync because a Digital date can be added later without
+                    #----- the stored media document changing.
                     needs_latest_release_date = (
                         "Latest Movies" in enabled_names
                         and _media_type(doc) == "movie"
-                        and not str(doc.get("release_date") or "").strip()
                     )
                     if already_synced and not needs_latest_release_date:
                         skipped += 1
