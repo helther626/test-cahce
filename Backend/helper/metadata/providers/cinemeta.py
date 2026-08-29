@@ -341,8 +341,11 @@ def build_movie_payload(imdb: dict, imdb_id: str, title: str, quality, encoded_s
     images = format_imdb_images(imdb_id)
     display = imdb.get("title", title) or title or ""
     payload = {
-        "tmdb_id": imdb.get("moviedb_id") or (imdb_id.replace("tt", "") if imdb_id else None),
+        # A mapped TMDB id is optional metadata only. Never manufacture a
+        # TMDB id by stripping "tt" from an IMDb id.
+        "tmdb_id": imdb.get("moviedb_id") or None,
         "imdb_id": imdb_id,
+        "metadata_source": "imdb",
         "title": display,
         "title_english": display,
         "year": imdb.get("releaseDetailed", {}).get("year", 0),
@@ -365,8 +368,11 @@ def build_tv_payload(imdb, ep, imdb_id, title, season, episode, quality, encoded
     images = format_imdb_images(imdb_id)
     display = imdb.get("title", title) or title or ""
     payload = {
-        "tmdb_id": imdb.get("moviedb_id") or (imdb_id.replace("tt", "") if imdb_id else None),
+        # A mapped TMDB id is optional metadata only. Never manufacture a
+        # TMDB id by stripping "tt" from an IMDb id.
+        "tmdb_id": imdb.get("moviedb_id") or None,
         "imdb_id": imdb_id,
+        "metadata_source": "imdb",
         "title": display,
         "title_english": display,
         "year": imdb.get("releaseDetailed", {}).get("year", 0),
