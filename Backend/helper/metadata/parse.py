@@ -82,6 +82,18 @@ def parse_media_name(name: str) -> dict:
         except Exception as e:
             LOGGER.warning(f"GuessIt parsing failed for {name}: {e}")
 
+    # Existing quality detection always wins. This is an additive fallback:
+    # a movie that has a title + year but no detectable quality is accepted as
+    # HD instead of being rejected. Existing formats are never overwritten.
+    if (
+        not parsed.get("quality")
+        and parsed.get("title")
+        and parsed.get("year")
+        and parsed.get("season") is None
+        and parsed.get("episode") is None
+    ):
+        parsed["quality"] = "HD"
+
     # The simple formats are intentionally allowed without a quality token.
     # Apply the fallback only after GuessIt has had a chance to detect 1080p,
     # 2160p, etc., so an explicit quality is never overwritten by HD.
