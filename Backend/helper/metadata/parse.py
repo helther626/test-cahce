@@ -129,7 +129,7 @@ def extract_absolute_episode(filename: str, parsed: dict | None = None) -> int |
     cleaned = re.sub(r"\.[a-z0-9]{2,4}$", " ", name, flags=re.I)
     cleaned = _RELEASE_GROUP_RE.sub(" ", cleaned)
     cleaned = _RES_WITH_P_RE.sub(" ", cleaned)
-    if not _RES_WITH_P_RE.search(parse_name): cleaned = _RES_BARE_TRAILING_RE.sub(" ", cleaned)
+    if not _RES_WITH_P_RE.search(name or ""): cleaned = _RES_BARE_TRAILING_RE.sub(" ", cleaned)
     cleaned = _QUALITY_TOKEN_RE.sub(" ", cleaned)
     cleaned = _YEAR_RE.sub(" ", cleaned)
     cleaned = re.sub(r"[\s._-]+", " ", cleaned).strip()
